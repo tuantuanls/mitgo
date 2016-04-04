@@ -1,7 +1,10 @@
 package mapreduce
 
 import "container/list"
-import "fmt"
+import (
+	"fmt"
+	"log"
+)
 
 
 type WorkerInfo struct {
@@ -28,7 +31,64 @@ func (mr *MapReduce) KillWorkers() *list.List {
 	return l
 }
 
+func writeChannel(s string, c chan string) {
+	c <- s;
+}
+
+func processWorkerReg(mr *MapReduce)  {
+	for mr.alive {
+		workerSockName := <- mr.registerChannel
+		go writeChannel(workerSockName, mr.jobCh)
+	}
+}
+
+func exeJob(mr *MapReduce, i int, workerSockName string, operation JobType) {
+	arg := &DoJobArgs{}
+	arg.Operation = operation;
+	arg.JobNumber = i;
+	arg.File = mr.file;
+
+	if operation == Map {
+		arg.NumOtherPhase = mr.nReduce
+	} else {
+		arg.NumOtherPhase = mr.nMap
+	}
+	var reply DoJobReply;
+	ok := call(workerSockName, "Worker.DoJob", arg, &reply)
+
+	if ok == false {
+		log.Printf("%v:%v RPC error\n", operation, i)
+	}
+	log.Printf("%v:%v RPC Done\n", operation, i)
+
+	go writeChannel(workerSockName, mr.jobCh)
+	go writeChannel("", mr.completeCh)
+}
+
+
 func (mr *MapReduce) RunMaster() *list.List {
 	// Your code here
+	go processWorkerReg(mr)
+
+	for i := 0; i < mr.nMap; i++ {
+		workerSockName := <- mr.jobCh
+		go exeJob(mr, i, workerSockName, Map)
+	}
+
+	// make sure all Map Job Completed
+	for i := 0; i < mr.nMap; i++ {
+		<- mr.completeCh
+	}
+
+	for i := 0; i < mr.nReduce; i++ {
+		workerSockName := <- mr.jobCh
+		go exeJob(mr, i,  workerSockName, Reduce)
+
+	}
+
+	// make sure all Reduce Job Completed
+	for i := 0; i < mr.nReduce; i++ {
+		<- mr.completeCh
+	}
 	return mr.KillWorkers()
 }

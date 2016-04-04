@@ -64,6 +64,8 @@ type MapReduce struct {
 	Workers map[string]*WorkerInfo
 
 	// add any additional state here
+	jobCh chan string //means that a worker is available
+	completeCh chan string //when a job is done, it will send something to this channel
 }
 
 func InitMapReduce(nmap int, nreduce int,
@@ -78,6 +80,8 @@ func InitMapReduce(nmap int, nreduce int,
 	mr.DoneChannel = make(chan bool)
 
 	// initialize any additional state here
+	mr.jobCh = make(chan string)
+	mr.completeCh = make(chan string)
 	return mr
 }
 
