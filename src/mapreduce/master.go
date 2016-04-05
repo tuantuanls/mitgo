@@ -31,48 +31,64 @@ func (mr *MapReduce) KillWorkers() *list.List {
 	return l
 }
 
-func writeChannel(s string, c chan string) {
+func writeChannelString(s string, c chan string) {
 	c <- s;
 }
 
-func processWorkerReg(mr *MapReduce)  {
+func writeChannelBool(s bool, c chan bool) {
+	c <- s;
+}
+
+func writeChannelJob(s *Job, c chan *Job) {
+	c <- s;
+}
+
+func workerRegProcessor(mr *MapReduce)  {
 	for mr.alive {
 		workerSockName := <- mr.registerChannel
-		go writeChannel(workerSockName, mr.jobCh)
+		go writeChannelString(workerSockName, mr.workerCh)
 	}
 }
 
-func exeJob(mr *MapReduce, i int, workerSockName string, operation JobType) {
+func exeJob(job *Job) {
 	arg := &DoJobArgs{}
-	arg.Operation = operation;
-	arg.JobNumber = i;
-	arg.File = mr.file;
+	arg.Operation = job.operation;
+	arg.JobNumber = job.index;
+	arg.File = job.mr.file;
 
-	if operation == Map {
-		arg.NumOtherPhase = mr.nReduce
+	if job.operation == Map {
+		arg.NumOtherPhase = job.mr.nReduce
 	} else {
-		arg.NumOtherPhase = mr.nMap
+		arg.NumOtherPhase = job.mr.nMap
 	}
 	var reply DoJobReply;
+
+	workerSockName := <- job.mr.workerCh
 	ok := call(workerSockName, "Worker.DoJob", arg, &reply)
 
-	if ok == false {
-		log.Printf("%v:%v RPC error\n", operation, i)
-	}
-	log.Printf("%v:%v RPC Done\n", operation, i)
+	if ok {
+		log.Printf("%s:%v RPC Done: ", job.operation, job.index)
+		go writeChannelBool(true, job.mr.completeCh)
 
-	go writeChannel(workerSockName, mr.jobCh)
-	go writeChannel("", mr.completeCh)
+	} else {
+		log.Printf("%s:%v RPC error\n", job.operation, job.index)
+		go writeChannelJob(job, job.mr.jobCh)
+	}
+
+	go writeChannelString(workerSockName, job.mr.workerCh)
 }
 
+func jobExecutor(mr *MapReduce) {
+	for mr.alive {
+		job := <- mr.jobCh
+		go exeJob(job)
+	}
+}
 
-func (mr *MapReduce) RunMaster() *list.List {
-	// Your code here
-	go processWorkerReg(mr)
-
+func processMapJobs(mr *MapReduce) {
+	//produce Map Jobs
 	for i := 0; i < mr.nMap; i++ {
-		workerSockName := <- mr.jobCh
-		go exeJob(mr, i, workerSockName, Map)
+		go writeChannelJob(&Job{Map, i, mr}, mr.jobCh)
 	}
 
 	// make sure all Map Job Completed
@@ -80,15 +96,34 @@ func (mr *MapReduce) RunMaster() *list.List {
 		<- mr.completeCh
 	}
 
-	for i := 0; i < mr.nReduce; i++ {
-		workerSockName := <- mr.jobCh
-		go exeJob(mr, i,  workerSockName, Reduce)
+	go writeChannelBool(true, mr.mapCompleteCh)
 
+}
+
+func processReduceJobs(mr *MapReduce)  {
+	<- mr.mapCompleteCh
+
+	for i := 0; i < mr.nReduce; i++ {
+		go writeChannelJob(&Job{Reduce, i, mr}, mr.jobCh)
 	}
 
 	// make sure all Reduce Job Completed
 	for i := 0; i < mr.nReduce; i++ {
 		<- mr.completeCh
 	}
+	go writeChannelBool(true, mr.reduceCompleteCh)
+}
+
+
+func (mr *MapReduce) RunMaster() *list.List {
+	// Your code here
+	go workerRegProcessor(mr)
+	go jobExecutor(mr)
+
+	go processMapJobs(mr);
+	go processReduceJobs(mr);
+
+	<- mr.reduceCompleteCh
+
 	return mr.KillWorkers()
 }
